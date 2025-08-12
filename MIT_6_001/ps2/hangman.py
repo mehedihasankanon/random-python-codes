@@ -92,6 +92,15 @@ def get_available_letters(letters_guessed):
   
     # apparnetly a better way is to do:
     # ''.join([letter for letter in string.ascii_lowercase if not letter in letters_guessed]) 
+    
+def get_unique_letter_count(secret_word):
+    '''
+    converts the secret word to a set to account for each letter only once, 
+    then returns the size of the set to get how many unique letters there are in 
+    the secret word
+    '''
+  
+    return len(set(secret_word))
 
 def hangman(secret_word):
     '''
@@ -118,8 +127,57 @@ def hangman(secret_word):
     
     Follows the other limitations detailed in the problem write-up.
     '''
-    # FILL IN YOUR CODE HERE AND DELETE "pass"
-    pass
+    
+    warning_count = 3
+    guess_count = 6
+    letters_guessed = []
+    
+    print('Welcome to the game Hangman!')
+    print(f'I am thinking of a word that is {len(secret_word)} letters long')
+    print(secret_word)
+    print(f'You have {warning_count} warnings left.')
+    print('-----------')
+    
+    while True:
+        if guess_count <= 0:
+            print(f'Sorry, you ran out of guesses. The word was {secret_word}.')
+      
+        print(f'You have {guess_count} guesses left.')
+        print(f'Available letters: {get_available_letters(letters_guessed)}')
+        guess = str.lower(input('Please guess a letter: '))
+        
+        if str.isalpha(guess):
+            if guess in letters_guessed:
+                if warning_count > 0:
+                    warning_count -= 1
+                else:
+                    guess -= 1
+                print(f'Oops! You\'ve already guessed that letter. You now have {warning_count} warnings: {get_guessed_word(secret_word, letters_guessed)}')
+            else:
+                if guess not in secret_word:
+                    letters_guessed.append(guess)
+                    print(f'Oops! That letter is not in my word: {get_guessed_word(secret_word, letters_guessed)}')
+                    if guess in ['a', 'e', 'i', 'o', 'u']:
+                        guess_count -= 2
+                    else:
+                        guess_count -= 1
+                else:
+                    letters_guessed.append(guess)
+                    print(f'Good guess: {get_guessed_word(secret_word, letters_guessed)}')
+        else:
+            if warning_count > 0:
+                warning_count -= 1
+            else:
+                guess_count -= 1
+            print(f'Oops! That is not a valid letter. You have 2 warnings left: {get_guessed_word(secret_word, letters_guessed)}')
+            
+        print('-----------')
+        if is_word_guessed(secret_word, letters_guessed):
+            print('Congratulations, You won!')
+            print(f'Your total score for this game is: {guess_count * get_unique_letter_count(secret_word)}')
+            break
+        
+    
 
 
 
@@ -189,8 +247,10 @@ def hangman_with_hints(secret_word):
     
     Follows the other limitations detailed in the problem write-up.
     '''
-    # FILL IN YOUR CODE HERE AND DELETE "pass"
+    
     pass
+    
+    
 
 
 
