@@ -22,19 +22,36 @@ def get_permutations(sequence):
     Note: depending on your implementation, you may return the permutations in
     a different order than what is listed here.
     '''
-
-    pass #delete this line and replace with your code here
+    
+    # Base case
+    if len(sequence) <= 1:
+        return [sequence]
+    
+    # First pull the permutations of the letters except the first one
+    allexceptfirst = get_permutations(sequence[1:])
+    # print(allexceptfirst)
+    
+    ans = []
+    for item in allexceptfirst:
+        for idx in range(len(item) + 1):
+            ans.append( item[:idx] + sequence[0] + item[idx:] )
+    
+    return ans
+    
 
 if __name__ == '__main__':
 #    #EXAMPLE
-#    example_input = 'abc'
-#    print('Input:', example_input)
-#    print('Expected Output:', ['abc', 'acb', 'bac', 'bca', 'cab', 'cba'])
-#    print('Actual Output:', get_permutations(example_input))
+    example_input = 'abc'
+    print('Input:', example_input)
+    print('Expected Output:', ['abc', 'acb', 'bac', 'bca', 'cab', 'cba'])
+    print('Actual Output:', get_permutations(example_input))
     
 #    # Put three example test cases here (for your sanity, limit your inputs
 #    to be three characters or fewer as you will have n! permutations for a 
 #    sequence of length n)
 
-    pass #delete this line and replace with your code here
-
+    for _ in range(3):
+        str = input('Input String: ')
+        perm = get_permutations(str)
+        print(f'Output: {perm}\nSize: {len(perm)}')
+        print(len(set(perm)))
