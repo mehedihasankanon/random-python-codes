@@ -92,8 +92,17 @@ def get_word_score(word, n):
     returns: int >= 0
     """
     
-    pass  # TO DO... Remove this line when you implement this function
-
+    word = word.lower()
+    first_comp = 0
+    for letter in word:
+        first_comp += SCRABBLE_LETTER_VALUES[letter]
+        
+    second_comp = max(7 * len(word) - 3 * (n - len(word)), 1)
+    
+    return first_comp * second_comp
+    
+    
+    
 #
 # Make sure you understand how this function works and what it does!
 #
@@ -167,6 +176,11 @@ def update_hand(hand, word):
     hand: dictionary (string -> int)    
     returns: dictionary (string -> int)
     """
+    
+     
+    
+    
+    
 
     pass  # TO DO... Remove this line when you implement this function
 

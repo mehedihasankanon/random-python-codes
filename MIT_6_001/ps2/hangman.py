@@ -93,6 +93,7 @@ def get_available_letters(letters_guessed):
     # apparnetly a better way is to do:
     # ''.join([letter for letter in string.ascii_lowercase if not letter in letters_guessed]) 
     
+    
 def get_unique_letter_count(secret_word):
     '''
     converts the secret word to a set to account for each letter only once, 
@@ -101,6 +102,7 @@ def get_unique_letter_count(secret_word):
     '''
   
     return len(set(secret_word))
+
 
 def hangman(secret_word):
     '''
