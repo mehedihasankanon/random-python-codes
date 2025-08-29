@@ -10,13 +10,14 @@
 import math
 import random
 import string
+import copy
 
 VOWELS = 'aeiou'
 CONSONANTS = 'bcdfghjklmnpqrstvwxyz'
-HAND_SIZE = 7
+HAND_SIZE = 8
 
 SCRABBLE_LETTER_VALUES = {
-    'a': 1, 'b': 3, 'c': 3, 'd': 2, 'e': 1, 'f': 4, 'g': 2, 'h': 4, 'i': 1, 'j': 8, 'k': 5, 'l': 1, 'm': 3, 'n': 1, 'o': 1, 'p': 3, 'q': 10, 'r': 1, 's': 1, 't': 1, 'u': 1, 'v': 4, 'w': 4, 'x': 8, 'y': 4, 'z': 10
+    'a': 1, 'b': 3, 'c': 3, 'd': 2, 'e': 1, 'f': 4, 'g': 2, 'h': 4, 'i': 1, 'j': 8, 'k': 5, 'l': 1, 'm': 3, 'n': 1, 'o': 1, 'p': 3, 'q': 10, 'r': 1, 's': 1, 't': 1, 'u': 1, 'v': 4, 'w': 4, 'x': 8, 'y': 4, 'z': 10, '*': 0
 }
 
 # -----------------------------------
@@ -143,13 +144,14 @@ def deal_hand(n):
     """
     
     hand={}
-    num_vowels = int(math.ceil(n / 3))
+    num_vowels = int(math.ceil(n / 3)) - 1
+    hand['*'] = 1
 
     for i in range(num_vowels):
         x = random.choice(VOWELS)
         hand[x] = hand.get(x, 0) + 1
     
-    for i in range(num_vowels, n):    
+    for i in range(num_vowels, n - 1):    
         x = random.choice(CONSONANTS)
         hand[x] = hand.get(x, 0) + 1
     
@@ -177,16 +179,35 @@ def update_hand(hand, word):
     returns: dictionary (string -> int)
     """
     
-     
+    hand_copy = copy.deepcopy(hand)
     
+    for letter in word.lower():
+        cur = hand_copy.get(letter, 0)
+        hand_copy.update({letter: cur - 1})
+        
+    new_hand = {}
     
+    for k, v in hand_copy.items():
+        if v > 0:
+            new_hand[k] = v
     
-
-    pass  # TO DO... Remove this line when you implement this function
+    return new_hand
 
 #
 # Problem #3: Test word validity
 #
+
+def is_valid_wildcard(wrd, hand, word_list):
+    word = copy.deepcopy(wrd)
+    
+    idx = word.find('*')
+    
+    for vwl in VOWELS:
+        new_word = word[:idx] + vwl + word[idx + 1:]
+        if new_word in word_list:
+            return True
+    return False
+
 def is_valid_word(word, hand, word_list):
     """
     Returns True if word is in the word_list and is entirely
@@ -198,8 +219,23 @@ def is_valid_word(word, hand, word_list):
     word_list: list of lowercase strings
     returns: boolean
     """
-
-    pass  # TO DO... Remove this line when you implement this function
+    new_word = word.lower()
+    
+    if '*' in new_word:
+        return is_valid_wildcard(word, hand, word_list)
+    
+    if new_word not in word_list:
+        return False
+    
+    word_freq = {}
+    for letter in new_word:
+        f = word_freq.get(letter, -1)
+        if f == -1:
+            word_freq[letter] = 1
+        else:
+            word_freq.update({letter : f + 1})
+            
+    return all(hand.get(letter, 0) >= freq for letter, freq in word_freq.items())
 
 #
 # Problem #5: Playing a hand
