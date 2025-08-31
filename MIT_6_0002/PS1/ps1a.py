@@ -6,6 +6,7 @@
 
 from ps1_partition import get_partitions
 import time
+import copy
 
 #================================
 # Part A: Transporting Space Cows
@@ -24,8 +25,16 @@ def load_cows(filename):
     Returns:
     a dictionary of cow name (string), weight (int) pairs
     """
-    # TODO: Your code here
-    pass
+
+    with open(filename, "r") as File:
+        dic = {}
+        lines = File.readlines()
+        for line in lines:
+            # print(line)
+            ls = line.split(',')
+            dic[ls[0]] = ls[1]
+        return dic        
+    
 
 # Problem 2
 def greedy_cow_transport(cows,limit=10):
@@ -50,8 +59,30 @@ def greedy_cow_transport(cows,limit=10):
     transported on a particular trip and the overall list containing all the
     trips
     """
-    # TODO: Your code here
-    pass
+    
+    copy_cows = copy.deepcopy(cows)
+    ans = []
+    
+    while copy_cows:
+        current_list = []
+        temp_store = {}
+        temp_lim = 0
+        while temp_lim < limit and copy_cows:
+            max_key = max(copy_cows, key = copy_cows.get)
+            if int(copy_cows[max_key]) + temp_lim > limit:
+                temp_store[max_key] = copy_cows[max_key]
+            else:
+                current_list.append(max_key)
+                temp_lim += int(copy_cows[max_key])
+            
+            copy_cows.pop(max_key)
+            
+        for k,v in temp_store.items():
+            copy_cows[k] = v
+        
+        ans.append(current_list)
+        
+    return ans
 
 # Problem 3
 def brute_force_cow_transport(cows,limit=10):
@@ -75,8 +106,29 @@ def brute_force_cow_transport(cows,limit=10):
     transported on a particular trip and the overall list containing all the
     trips
     """
-    # TODO: Your code here
-    pass
+    
+    partitions = list(get_partitions(cows))
+    
+    # print(partitions)
+    
+    opt_part = None
+    for partition in partitions:
+        possible_to_do_it = True
+        for partition_level in partition:
+            current_limit = 0
+            for item in partition_level:
+                current_limit += int(cows[item])
+                if current_limit > limit:
+                    possible_to_do_it = False
+                    break
+            if not possible_to_do_it:
+                break
+        if possible_to_do_it:
+            if not opt_part or len(partition) < len(opt_part):
+                opt_part = partition
+                
+    return opt_part
+    
         
 # Problem 4
 def compare_cow_transport_algorithms():
@@ -93,4 +145,16 @@ def compare_cow_transport_algorithms():
     Does not return anything.
     """
     # TODO: Your code here
+    
+    FILENAME = 'ps1_cow_data.txt'
+    
+    cows = load_cows(FILENAME)
+    
+    print(greedy_cow_transport(cows))
+    print(brute_force_cow_transport(cows))
+    
+    
     pass
+
+
+compare_cow_transport_algorithms()
