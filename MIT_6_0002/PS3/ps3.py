@@ -89,9 +89,9 @@ class RectangularRoom(object):
         self.height = height
 
         self.floor = []
-        for i in range(width):
+        for i in range(int(width)):
             self.floor.append([])
-            for j in range(height):
+            for j in range(int(height)):
                 self.floor[i].append(dirt_amount)
 
     def clean_tile_at_position(self, pos, capacity):
@@ -383,7 +383,7 @@ class StandardRobot(Robot):
 
 # Uncomment this line to see your implementation of StandardRobot in action!
 # test_robot_movement(StandardRobot, EmptyRoom)
-test_robot_movement(StandardRobot, FurnishedRoom)
+# test_robot_movement(StandardRobot, FurnishedRoom)
 
 # === Problem 4
 class FaultyRobot(Robot):
@@ -458,7 +458,26 @@ def run_simulation(num_robots, speed, capacity, width, height, dirt_amount, min_
     robot_type: class of robot to be instantiated (e.g. StandardRobot or
                 FaultyRobot)
     """
-    raise NotImplementedError
+    room = EmptyRoom(width, height, dirt_amount)
+    
+    total_time = 0
+    robots = [StandardRobot(room, speed, capacity)] * num_robots
+    
+    for trial in range(num_trials):
+        time_steps = 0
+        coverage = 0.0
+        while coverage < min_coverage:
+            time_steps += 1
+            for robot in robots:
+                robot.update_position_and_clean()
+                coverage = float(room.get_num_cleaned_tiles())/room.get_num_tiles()
+                
+                if coverage >= min_coverage:
+                    break
+        total_time += time_steps
+    
+    return float(total_time/num_trials)
+    
 
 
 # print ('avg time steps: ' + str(run_simulation(1, 1.0, 1, 5, 5, 3, 1.0, 50, StandardRobot)))
@@ -509,7 +528,7 @@ def show_plot_room_shape(title, x_label, y_label):
     times1 = []
     times2 = []
     for width in [10, 20, 25, 50]:
-        height = 300/width
+        height = 300//width
         print ("Plotting cleaning time for a room of width:", width, "by height:", height)
         aspect_ratios.append(float(width) / height)
         times1.append(run_simulation(2, 1.0, 1, width, height, 3, 0.8, 200, StandardRobot))
@@ -523,5 +542,6 @@ def show_plot_room_shape(title, x_label, y_label):
     pylab.show()
 
 
-#show_plot_compare_strategies('Time to clean 80% of a 20x20 room, for various numbers of robots','Number of robots','Time / steps')
-#show_plot_room_shape('Time to clean 80% of a 300-tile room for various room shapes','Aspect Ratio', 'Time / steps')
+# show_plot_compare_strategies('Time to clean 80% of a 20x20 room, for various numbers of robots','Number of robots','Time / steps')
+show_plot_room_shape('Time to clean 80% of a 300-tile room for various room shapes','Aspect Ratio', 'Time / steps')
+
