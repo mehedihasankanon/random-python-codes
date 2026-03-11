@@ -1,0 +1,765 @@
+# =============================================================================
+# PDF Page Extractor — pdf_cut_v1.py
+# =============================================================================
+#
+# DEPENDENCIES (install before running):
+#   pip install pypdf tkinterdnd2 Pillow
+#
+# RUN:
+#   python pdf_cut_v1.py
+#
+# BUILD STANDALONE .EXE (PyInstaller):
+#   pip install pyinstaller
+#   pyinstaller --onefile --windowed --name "PDF_Extractor" pdf_cut_v1.py
+#   The executable will appear in the  dist/  folder.
+#
+# =============================================================================
+
+import io
+import os
+import re
+import json
+import threading
+import tkinter as tk
+from tkinter import ttk, filedialog, messagebox
+
+# pypdf — preferred library for PDF manipulation
+try:
+    from pypdf import PdfReader, PdfWriter  # type: ignore[import-untyped]
+except ImportError:
+    messagebox.showerror(
+        "Missing dependency",
+        "pypdf is not installed.\nRun:  pip install pypdf",
+    )
+    raise SystemExit(1)
+
+# tkinterdnd2 — drag-and-drop support (optional but preferred)
+try:
+    from tkinterdnd2 import DND_FILES, TkinterDnD  # type: ignore[import-untyped]
+    DND_AVAILABLE: bool = True
+except ImportError:
+    DND_AVAILABLE = False
+    DND_FILES = None  # type: ignore[assignment]
+    TkinterDnD = None  # type: ignore[assignment,misc]
+
+# Pillow — used for the first-page thumbnail preview (optional)
+try:
+    from PIL import Image, ImageTk  # type: ignore[import-untyped]
+    PILLOW_AVAILABLE: bool = True
+except ImportError:
+    PILLOW_AVAILABLE = False
+    Image = None     # type: ignore[assignment,misc]
+    ImageTk = None   # type: ignore[assignment,misc]
+
+# --------------------------------------------------------------------------- #
+#  Persistent settings (last-used folder, window geometry …)                  #
+# --------------------------------------------------------------------------- #
+SETTINGS_FILE = os.path.join(os.path.expanduser("~"), ".pdf_cut_settings.json")
+
+
+def load_settings() -> dict:
+    """Load user settings from the JSON settings file."""
+    try:
+        with open(SETTINGS_FILE, "r") as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+
+def save_settings(data: dict) -> None:
+    """Persist user settings to the JSON settings file."""
+    try:
+        with open(SETTINGS_FILE, "w") as f:
+            json.dump(data, f, indent=2)
+    except OSError:
+        pass  # Non-critical — silently ignore write errors
+
+
+# --------------------------------------------------------------------------- #
+#  Page-range parser / validator                                               #
+# --------------------------------------------------------------------------- #
+
+def parse_page_ranges(raw: str, total_pages: int) -> list[int]:
+    """
+    Parse a page-range string and return a sorted, deduplicated list of
+    **0-based** page indices.
+
+    Accepted formats (1-based page numbers):
+        "1-5"          → pages 1 through 5
+        "3,6,9"        → pages 3, 6, and 9
+        "1-3,7,10-12"  → pages 1–3, 7, and 10–12
+
+    Raises ValueError with a descriptive message on invalid input.
+    """
+    if not raw.strip():
+        raise ValueError("Page range field is empty.")
+
+    # Allow only digits, commas, hyphens, and whitespace
+    if not re.match(r"^[\d,\-\s]+$", raw):
+        raise ValueError(
+            f"Invalid characters in page range: '{raw}'\n"
+            "Use digits, commas, and hyphens only (e.g. 1-5,8,11-13)."
+        )
+
+    pages: set[int] = set()
+    tokens = [t.strip() for t in raw.split(",") if t.strip()]
+
+    for token in tokens:
+        if "-" in token:
+            parts = token.split("-")
+            if len(parts) != 2:
+                raise ValueError(f"Invalid range token: '{token}'")
+            start_s, end_s = parts
+            if not start_s.isdigit() or not end_s.isdigit():
+                raise ValueError(f"Non-numeric value in range: '{token}'")
+            start, end = int(start_s), int(end_s)
+            if start < 1 or end < 1:
+                raise ValueError(f"Page numbers must be ≥ 1. Got: '{token}'")
+            if start > end:
+                raise ValueError(
+                    f"Start page ({start}) is greater than end page ({end}) "
+                    f"in range '{token}'."
+                )
+            if end > total_pages:
+                raise ValueError(
+                    f"Page {end} exceeds the PDF's total page count "
+                    f"({total_pages})."
+                )
+            pages.update(range(start - 1, end))  # convert to 0-based
+        else:
+            if not token.isdigit():
+                raise ValueError(f"Non-numeric page number: '{token}'")
+            p = int(token)
+            if p < 1:
+                raise ValueError(f"Page numbers must be ≥ 1. Got: {p}")
+            if p > total_pages:
+                raise ValueError(
+                    f"Page {p} exceeds the PDF's total page count "
+                    f"({total_pages})."
+                )
+            pages.add(p - 1)  # convert to 0-based
+
+    if not pages:
+        raise ValueError("No valid pages found in the range specification.")
+
+    return sorted(pages)
+
+
+# --------------------------------------------------------------------------- #
+#  Main Application                                                            #
+# --------------------------------------------------------------------------- #
+
+class PDFCutApp:
+    """
+    Main application window for PDF Page Extractor.
+
+    Layout:
+        ┌─────────────────────────────────┐
+        │  Drop Zone / Browse             │
+        │  File info (name + page count)  │
+        │  First-page thumbnail           │
+        │  Page range input               │
+        │  [Select All]  [Extract]        │
+        │  Progress bar + status label    │
+        └─────────────────────────────────┘
+    """
+
+    # Colour palette
+    BG        = "#1e1e2e"
+    SURFACE   = "#2a2a3e"
+    ACCENT    = "#7c6af7"
+    ACCENT_H  = "#9d8fff"
+    TEXT      = "#cdd6f4"
+    SUBTEXT   = "#a6adc8"
+    SUCCESS   = "#a6e3a1"
+    ERROR     = "#f38ba8"
+    DROP_BORDER = "#585b70"
+
+    def __init__(self, root: tk.Tk) -> None:
+        self.root = root
+        self.root.title("PDF Page Extractor")
+        self.root.resizable(False, False)
+        self.root.configure(bg=self.BG)
+
+        self.settings = load_settings()
+        self._restore_geometry()
+
+        # Application state
+        self.pdf_path: str | None = None
+        self.total_pages: int = 0
+        self.reader: PdfReader | None = None
+        self._thumb_image: object = None  # keep reference to prevent GC
+
+        self._build_ui()
+
+        # Bind drag-and-drop on the whole window if tkinterdnd2 is available
+        if DND_AVAILABLE:
+            self.root.drop_target_register(DND_FILES)  # type: ignore[attr-defined]
+            self.root.dnd_bind("<<Drop>>", self._on_drop)  # type: ignore[attr-defined]
+
+        self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+
+    # ---------------------------------------------------------------------- #
+    #  UI construction                                                         #
+    # ---------------------------------------------------------------------- #
+
+    def _build_ui(self) -> None:
+        pad = {"padx": 16, "pady": 8}
+
+        # ── Top: Drop zone ────────────────────────────────────────────────── #
+        drop_frame = tk.Frame(
+            self.root, bg=self.SURFACE, bd=2, relief="flat",
+            highlightbackground=self.DROP_BORDER, highlightthickness=2,
+            width=500, height=120,
+        )
+        drop_frame.pack(fill="x", padx=20, pady=(20, 8))
+        drop_frame.pack_propagate(False)
+
+        self.drop_label = tk.Label(
+            drop_frame,
+            text="⬇  Drop a PDF here\nor use the Browse button below",
+            bg=self.SURFACE, fg=self.SUBTEXT,
+            font=("Segoe UI", 11),
+            justify="center",
+        )
+        self.drop_label.pack(expand=True)
+
+        # Make the drop zone itself also a drop target
+        if DND_AVAILABLE:
+            drop_frame.drop_target_register(DND_FILES)  # type: ignore[attr-defined]
+            drop_frame.dnd_bind("<<Drop>>", self._on_drop)  # type: ignore[attr-defined]
+            self.drop_label.drop_target_register(DND_FILES)  # type: ignore[attr-defined]
+            self.drop_label.dnd_bind("<<Drop>>", self._on_drop)  # type: ignore[attr-defined]
+
+        # ── Browse button ─────────────────────────────────────────────────── #
+        self._make_button(
+            self.root, "Browse for PDF …", self._browse_file, width=18
+        ).pack(pady=(0, 12))
+
+        # ── File info strip ───────────────────────────────────────────────── #
+        info_frame = tk.Frame(self.root, bg=self.BG)
+        info_frame.pack(fill="x", padx=20)
+
+        tk.Label(
+            info_frame, text="File:", bg=self.BG, fg=self.SUBTEXT,
+            font=("Segoe UI", 9, "bold"),
+        ).grid(row=0, column=0, sticky="w")
+
+        self.lbl_filename = tk.Label(
+            info_frame, text="—", bg=self.BG, fg=self.TEXT,
+            font=("Segoe UI", 9), anchor="w",
+        )
+        self.lbl_filename.grid(row=0, column=1, sticky="w", padx=(6, 0))
+
+        tk.Label(
+            info_frame, text="Pages:", bg=self.BG, fg=self.SUBTEXT,
+            font=("Segoe UI", 9, "bold"),
+        ).grid(row=1, column=0, sticky="w", pady=(2, 0))
+
+        self.lbl_pages = tk.Label(
+            info_frame, text="—", bg=self.BG, fg=self.TEXT,
+            font=("Segoe UI", 9), anchor="w",
+        )
+        self.lbl_pages.grid(row=1, column=1, sticky="w", padx=(6, 0), pady=(2, 0))
+
+        # ── Thumbnail preview (shown only when Pillow is available) ───────── #
+        self.thumb_frame = tk.Frame(self.root, bg=self.BG)
+        self.thumb_frame.pack(pady=(10, 4))
+
+        self.thumb_label = tk.Label(
+            self.thumb_frame, bg=self.BG,
+            text="" if PILLOW_AVAILABLE else "(Install Pillow for page preview)",
+            fg=self.SUBTEXT, font=("Segoe UI", 8, "italic"),
+        )
+        self.thumb_label.pack()
+
+        # ── Separator ─────────────────────────────────────────────────────── #
+        ttk.Separator(self.root, orient="horizontal").pack(
+            fill="x", padx=20, pady=8
+        )
+
+        # ── Page range input ──────────────────────────────────────────────── #
+        tk.Label(
+            self.root,
+            text="Page range  (e.g. 1-5,8,11-13)",
+            bg=self.BG, fg=self.SUBTEXT,
+            font=("Segoe UI", 9),
+        ).pack(anchor="w", padx=20)
+
+        range_row = tk.Frame(self.root, bg=self.BG)
+        range_row.pack(fill="x", padx=20, pady=(4, 0))
+
+        self.entry_range = tk.Entry(
+            range_row,
+            font=("Consolas", 11),
+            bg=self.SURFACE, fg=self.TEXT,
+            insertbackground=self.TEXT,
+            relief="flat", bd=6,
+            highlightbackground=self.DROP_BORDER,
+            highlightthickness=1,
+        )
+        self.entry_range.pack(side="left", fill="x", expand=True)
+
+        self._make_button(
+            range_row, "All", self._select_all_pages, width=5
+        ).pack(side="left", padx=(8, 0))
+
+        # ── Action buttons ────────────────────────────────────────────────── #
+        btn_row = tk.Frame(self.root, bg=self.BG)
+        btn_row.pack(pady=14)
+
+        self._make_button(
+            btn_row, "Extract pages →", self._start_extraction, width=20,
+            font=("Segoe UI", 11, "bold"),
+        ).pack(side="left", padx=6)
+
+        self._make_button(
+            btn_row, "Extract to separate PDFs",
+            self._start_extraction_separate, width=24,
+            font=("Segoe UI", 10),
+        ).pack(side="left", padx=6)
+
+        # ── Progress bar ──────────────────────────────────────────────────── #
+        style = ttk.Style()
+        style.theme_use("clam")
+        style.configure(
+            "Accent.Horizontal.TProgressbar",
+            troughcolor=self.SURFACE,
+            background=self.ACCENT,
+            bordercolor=self.BG,
+            lightcolor=self.ACCENT,
+            darkcolor=self.ACCENT,
+        )
+
+        self.progress = ttk.Progressbar(
+            self.root, orient="horizontal", length=460, mode="determinate",
+            style="Accent.Horizontal.TProgressbar",
+        )
+        self.progress.pack(padx=20, pady=(0, 6))
+
+        # ── Status message ────────────────────────────────────────────────── #
+        self.lbl_status = tk.Label(
+            self.root, text="Ready.", bg=self.BG, fg=self.SUBTEXT,
+            font=("Segoe UI", 9), wraplength=460, justify="left",
+        )
+        self.lbl_status.pack(anchor="w", padx=20, pady=(0, 18))
+
+    def _make_button(
+        self, parent, text: str, command, width: int | None = None,
+        font=("Segoe UI", 10),
+    ) -> tk.Button:
+        """Factory that creates themed buttons."""
+        btn = tk.Button(
+            parent, text=text, command=command,
+            bg=self.ACCENT, fg="white", activebackground=self.ACCENT_H,
+            activeforeground="white", relief="flat", bd=0,
+            font=font, cursor="hand2",
+            padx=10, pady=5,
+        )
+        if width:
+            btn.configure(width=width)
+        btn.bind("<Enter>", lambda e: btn.configure(bg=self.ACCENT_H))
+        btn.bind("<Leave>", lambda e: btn.configure(bg=self.ACCENT))
+        return btn
+
+    # ---------------------------------------------------------------------- #
+    #  File loading helpers                                                    #
+    # ---------------------------------------------------------------------- #
+
+    def _browse_file(self) -> None:
+        """Open a file-chooser dialog for the user to pick a PDF."""
+        initial_dir = self.settings.get("last_input_dir", os.path.expanduser("~"))
+        path = filedialog.askopenfilename(
+            title="Select a PDF file",
+            initialdir=initial_dir,
+            filetypes=[("PDF files", "*.pdf"), ("All files", "*.*")],
+        )
+        if path:
+            self._load_pdf(path)
+
+    def _on_drop(self, event) -> None:
+        """Handle a file dropped onto the window via drag-and-drop."""
+        # tkinterdnd2 may wrap the path in braces when it contains spaces
+        raw = event.data.strip()
+        path = raw.strip("{}")
+        # On Windows, multiple files are space-separated inside braces
+        # We only handle the first one
+        if " " in path and not os.path.exists(path):
+            path = path.split()[0].strip("{}")
+        if path.lower().endswith(".pdf") and os.path.isfile(path):
+            self._load_pdf(path)
+        else:
+            self._set_status("⚠ Please drop a valid PDF file.", error=True)
+
+    def _load_pdf(self, path: str) -> None:
+        """Open the PDF, update UI labels and show a thumbnail."""
+        try:
+            reader = PdfReader(path)
+            self.pdf_path = path
+            self.reader = reader
+            self.total_pages = len(reader.pages)
+        except Exception as exc:
+            messagebox.showerror("Cannot open PDF", str(exc))
+            return
+
+        # Remember folder
+        self.settings["last_input_dir"] = os.path.dirname(path)
+        save_settings(self.settings)
+
+        # Update labels
+        filename = os.path.basename(path)
+        self.lbl_filename.configure(
+            text=(filename if len(filename) <= 55 else "…" + filename[-52:])
+        )
+        self.lbl_pages.configure(
+            text=f"{self.total_pages} page{'s' if self.total_pages != 1 else ''}"
+        )
+        self.drop_label.configure(
+            text=f"✔  {filename}", fg=self.SUCCESS
+        )
+        self._set_status(f"Loaded: {filename}  ({self.total_pages} pages)")
+
+        # Thumbnail in a background thread to keep the UI responsive
+        if PILLOW_AVAILABLE:
+            threading.Thread(
+                target=self._render_thumbnail, daemon=True
+            ).start()
+
+    def _render_thumbnail(self) -> None:
+        """
+        Render the first page of the PDF as a small thumbnail.
+        Uses pypdf's page rendering via Pillow (requires pypdf ≥ 4.x with
+        rendering support, or falls back gracefully).
+        """
+        if self.reader is None or Image is None:
+            return
+        try:
+            page = self.reader.pages[0]
+            # Extract any embedded image from the first page as a quick preview
+            images = list(page.images)
+            if images:
+                raw_bytes = images[0].data
+                img = Image.open(io.BytesIO(raw_bytes))  # type: ignore[union-attr]
+            else:
+                # No embedded image — show a plain placeholder
+                img = Image.new("RGB", (120, 160), color="#3b3b52")  # type: ignore[union-attr]
+        except Exception:
+            img = Image.new("RGB", (120, 160), color="#3b3b52")  # type: ignore[union-attr]
+
+        img.thumbnail((120, 160))
+        photo = ImageTk.PhotoImage(img)  # type: ignore[union-attr]
+        # Must update the label from the main thread
+        self.root.after(0, self._update_thumb, photo)
+
+    def _update_thumb(self, photo: object) -> None:
+        """Called on the main thread to set the thumbnail image."""
+        self._thumb_image = photo  # prevent garbage collection
+        self.thumb_label.configure(image=photo, text="")  # type: ignore[arg-type]
+
+    # ---------------------------------------------------------------------- #
+    #  Status / progress helpers                                               #
+    # ---------------------------------------------------------------------- #
+
+    def _set_status(self, msg: str, error: bool = False) -> None:
+        """Update the status label text and colour."""
+        color = self.ERROR if error else self.SUCCESS if msg.startswith("✔") else self.SUBTEXT
+        self.lbl_status.configure(text=msg, fg=color)
+
+    def _set_progress(self, value: float) -> None:
+        """Set the progress bar value (0–100)."""
+        self.progress["value"] = value
+        self.root.update_idletasks()
+
+    # ---------------------------------------------------------------------- #
+    #  Page selection helpers                                                  #
+    # ---------------------------------------------------------------------- #
+
+    def _select_all_pages(self) -> None:
+        """Fill the range entry with '1-N' to select every page."""
+        if self.total_pages:
+            self.entry_range.delete(0, tk.END)
+            self.entry_range.insert(0, f"1-{self.total_pages}")
+        else:
+            self._set_status("Load a PDF first.", error=True)
+
+    # ---------------------------------------------------------------------- #
+    #  Extraction — combined output                                            #
+    # ---------------------------------------------------------------------- #
+
+    def _start_extraction(self) -> None:
+        """Validate inputs and kick off the single-file extraction thread."""
+        if not self._validate_inputs():
+            return
+        # Ask for output file
+        initial_dir = self.settings.get("last_output_dir", os.path.expanduser("~"))
+        default_name = self._default_output_name()
+        out_path = filedialog.asksaveasfilename(
+            title="Save extracted PDF as …",
+            initialdir=initial_dir,
+            initialfile=default_name,
+            defaultextension=".pdf",
+            filetypes=[("PDF file", "*.pdf")],
+        )
+        if not out_path:
+            return
+        self.settings["last_output_dir"] = os.path.dirname(out_path)
+        save_settings(self.settings)
+
+        raw = self.entry_range.get()
+        threading.Thread(
+            target=self._extract_combined,
+            args=(raw, out_path),
+            daemon=True,
+        ).start()
+
+    def _extract_combined(self, raw_range: str, out_path: str) -> None:
+        """Worker thread: write selected pages into a single output PDF."""
+        try:
+            pages = parse_page_ranges(raw_range, self.total_pages)
+        except ValueError as exc:
+            err_msg = str(exc)
+            self.root.after(0, lambda: messagebox.showerror("Invalid page range", err_msg))
+            return
+
+        assert self.reader is not None
+        writer = PdfWriter()
+        total = len(pages)
+
+        for i, idx in enumerate(pages):
+            writer.add_page(self.reader.pages[idx])
+            pct = (i + 1) / total * 100
+            self.root.after(0, self._set_progress, pct)
+
+        try:
+            with open(out_path, "wb") as f:
+                writer.write(f)
+        except OSError as exc:
+            err_msg = str(exc)
+            self.root.after(0, lambda: messagebox.showerror("Write error", err_msg))
+            self.root.after(0, self._set_progress, 0)
+            return
+
+        self.root.after(0, self._set_progress, 100)
+        status_msg = f"✔  Saved {total} page(s) → {os.path.basename(out_path)}"
+        done_msg = f"Extracted {total} page(s) successfully.\n\n{out_path}"
+        self.root.after(0, lambda: self._set_status(status_msg))
+        self.root.after(0, lambda: messagebox.showinfo("Done", done_msg))
+
+    # ---------------------------------------------------------------------- #
+    #  Extraction — separate output files                                      #
+    # ---------------------------------------------------------------------- #
+
+    def _start_extraction_separate(self) -> None:
+        """
+        Parse comma/hyphen separated tokens and write each contiguous range
+        or individual page to its own PDF file in a user-chosen folder.
+        """
+        if not self._validate_inputs():
+            return
+        out_dir = filedialog.askdirectory(
+            title="Choose output folder for separate PDFs",
+            initialdir=self.settings.get("last_output_dir", os.path.expanduser("~")),
+        )
+        if not out_dir:
+            return
+        self.settings["last_output_dir"] = out_dir
+        save_settings(self.settings)
+
+        raw = self.entry_range.get()
+        threading.Thread(
+            target=self._extract_separate,
+            args=(raw, out_dir),
+            daemon=True,
+        ).start()
+
+    def _extract_separate(self, raw_range: str, out_dir: str) -> None:
+        """
+        Worker thread: each token in the range string becomes its own PDF.
+        E.g. '1-3,7,10-12' produces three separate files.
+        """
+        tokens = [t.strip() for t in raw_range.split(",") if t.strip()]
+        assert self.pdf_path is not None
+        assert self.reader is not None
+        base = os.path.splitext(os.path.basename(self.pdf_path))[0]
+        created: list[str] = []
+
+        for i, token in enumerate(tokens):
+            try:
+                pages = parse_page_ranges(token, self.total_pages)
+            except ValueError as exc:
+                err_msg = f"Token '{token}': {exc}"
+                self.root.after(0, lambda: messagebox.showerror("Invalid page range", err_msg))
+                return
+
+            writer = PdfWriter()
+            for idx in pages:
+                writer.add_page(self.reader.pages[idx])
+
+            # Build a descriptive filename, e.g. "document_p1-3.pdf"
+            label = token.replace(",", "_").replace(" ", "")
+            out_name = f"{base}_p{label}.pdf"
+            out_path = os.path.join(out_dir, out_name)
+
+            try:
+                with open(out_path, "wb") as f:
+                    writer.write(f)
+                created.append(out_name)
+            except OSError as exc:
+                err_msg = str(exc)
+                self.root.after(0, lambda: messagebox.showerror("Write error", err_msg))
+                return
+
+            pct = (i + 1) / len(tokens) * 100
+            self.root.after(0, self._set_progress, pct)
+
+        self.root.after(0, self._set_progress, 100)
+        status_msg = f"✔  Created {len(created)} file(s) in: {out_dir}"
+        done_msg = f"Created {len(created)} PDF file(s) in:\n{out_dir}\n\n" + "\n".join(created)
+        self.root.after(0, lambda: self._set_status(status_msg))
+        self.root.after(0, lambda: messagebox.showinfo("Done", done_msg))
+
+    # ---------------------------------------------------------------------- #
+    #  Validation guard                                                        #
+    # ---------------------------------------------------------------------- #
+
+    def _validate_inputs(self) -> bool:
+        """
+        Check that a PDF is loaded and a page range has been entered.
+        Shows an error dialog if not. Returns True on success.
+        """
+        if not self.pdf_path or not self.reader:
+            messagebox.showwarning("No file selected", "Please select a PDF file first.")
+            return False
+        raw = self.entry_range.get().strip()
+        if not raw:
+            messagebox.showwarning(
+                "No page range", "Please enter a page range (e.g. 1-5,8,11-13)."
+            )
+            return False
+        # Perform a dry-run parse to catch errors before opening the save dialog
+        try:
+            parse_page_ranges(raw, self.total_pages)
+        except ValueError as exc:
+            messagebox.showerror("Invalid page range", str(exc))
+            return False
+        return True
+
+    # ---------------------------------------------------------------------- #
+    #  Misc helpers                                                            #
+    # ---------------------------------------------------------------------- #
+
+    def _default_output_name(self) -> str:
+        """Suggest an output filename based on the source filename."""
+        if self.pdf_path:
+            stem = os.path.splitext(os.path.basename(self.pdf_path))[0]
+            raw = self.entry_range.get().strip().replace(",", "_").replace(" ", "")
+            return f"{stem}_p{raw}.pdf"
+        return "extracted.pdf"
+
+    def _restore_geometry(self) -> None:
+        """Centre the window or restore its last known position."""
+        w, h = 520, 680
+        sw = self.root.winfo_screenwidth()
+        sh = self.root.winfo_screenheight()
+        x = (sw - w) // 2
+        y = (sh - h) // 2
+        self.root.geometry(f"{w}x{h}+{x}+{y}")
+
+    def _on_close(self) -> None:
+        """Save settings before exiting."""
+        save_settings(self.settings)
+        self.root.destroy()
+
+
+# --------------------------------------------------------------------------- #
+#  Entry point                                                                 #
+# --------------------------------------------------------------------------- #
+
+def main() -> None:
+    if DND_AVAILABLE and TkinterDnD is not None:
+        root = TkinterDnD.Tk()  # type: ignore[union-attr]
+    else:
+        root = tk.Tk()
+        # Inform the user that drag-and-drop is unavailable
+        print(
+            "Note: tkinterdnd2 is not installed. "
+            "Drag-and-drop will be disabled.\n"
+            "Install it with:  pip install tkinterdnd2"
+        )
+
+    app = PDFCutApp(root)
+    root.mainloop()
+
+
+if __name__ == "__main__":
+    main()
+
+
+# =============================================================================
+# QUICK REFERENCE
+# =============================================================================
+#
+# Install dependencies:
+#   pip install pypdf tkinterdnd2 Pillow
+#
+# Run the application:
+#   python pdf_cut_v1.py
+#
+# Build a standalone Windows executable:
+#   pip install pyinstaller
+#   pyinstaller --onefile --windowed --name "PDF_Extractor" pdf_cut_v1.py
+#
+#   The resulting  dist\PDF_Extractor.exe  can be distributed without Python.
+#   If drag-and-drop must work in the .exe, add the tkinterdnd2 hook:
+#   pyinstaller --onefile --windowed \
+#       --collect-data tkinterdnd2 \
+#       --name "PDF_Extractor" pdf_cut_v1.py
+#
+# =============================================================================
+
+
+
+
+## What was built
+
+# ### Core features
+# | Feature | Details |
+# |---|---|
+# | **Browse button** | Opens a file-chooser dialog, remembers the last folder |
+# | **Drag-and-drop** | Drop a PDF directly onto the window or the drop zone (requires `tkinterdnd2`) |
+# | **Page range input** | Supports `1-5`, `3,6,9`, `1-3,7,10-12` and any mix |
+# | **"All" button** | Fills the range field with `1-N` in one click |
+# | **File info strip** | Shows filename + total page count after loading |
+# | **First-page thumbnail** | Rendered in a background thread (requires `Pillow`) |
+# | **Extract → single PDF** | Prompts for save location, writes selected pages |
+# | **Extract → separate PDFs** | Each comma/range token becomes its own file in a chosen folder |
+# | **Progress bar** | Fills as pages are written |
+# | **Status label** | Describes current state; turns red on error, green on success |
+# | **Settings persistence** | Last-used input/output folders saved to `~/.pdf_cut_settings.json` |
+# | **Input validation** | Invalid characters, out-of-range pages, empty fields → friendly dialogs |
+
+# ---
+
+# ### Install & run
+
+# ```bash
+# # Install dependencies
+# pip install pypdf tkinterdnd2 Pillow
+
+# # Run
+# python pdf_cut_v1.py
+# ```
+
+# ### Package as a standalone .exe (PyInstaller)
+
+# ```bash
+# pip install pyinstaller
+
+# # Basic (drag-and-drop may not work in .exe without the hook)
+# pyinstaller --onefile --windowed --name "PDF_Extractor" pdf_cut_v1.py
+
+# # With drag-and-drop support in the .exe
+# pyinstaller --onefile --windowed --collect-data tkinterdnd2 --name "PDF_Extractor" pdf_cut_v1.py
+# ```
+
+# The executable appears in `dist\PDF_Extractor.exe`.
