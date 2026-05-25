@@ -1,0 +1,1 @@
+{"name":"Local: test","url":"d:\\random-python-codes\\Scripts\\test.py","tests":[{"id":1775055400389,"input":"4\n1 2 6\n2 5 2\n19 6 4\n167 1 102\n","output":""}],"interactive":false,"memoryLimit":1024,"timeLimit":3000,"srcPath":"d:\\random-python-codes\\Scripts\\test.py","group":"local","local":true}
