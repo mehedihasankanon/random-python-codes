@@ -13,6 +13,7 @@ def gradient_descent(X, y, theta, alpha, num_iters):
         #
         # Hint: X.shape = (97, 2), y.shape = (97, ), theta.shape = (2, )
 
+        theta = theta - (alpha / m) * ( X.T @ ( X @ theta - y ) )
 
         # ===========================================================
         # Save the cost every iteration

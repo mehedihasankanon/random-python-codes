@@ -69,7 +69,8 @@ for i in range(0, theta0_vals.size):
 J_vals = np.transpose(J_vals)
 
 fig1 = plt.figure(1)
-ax = fig1.gca(projection='3d')
+# create a 3D axes for surface plotting
+ax = fig1.add_subplot(111, projection='3d')
 ax.plot_surface(xs, ys, J_vals)
 plt.xlabel(r'$\theta_0$')
 plt.ylabel(r'$\theta_1$')
